@@ -1,6 +1,6 @@
 /*
 A basic implemenetation of a sandbox.
-id like to flesh this out much more
+Fluid dynamics testing
 */
 
 package main
@@ -13,6 +13,11 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/vector"
+)
+
+const (
+	MaxWaterPressure     = 7
+	SurfaceTensionFactor = 0.3
 )
 
 const (
@@ -30,28 +35,10 @@ const GAME_WIDTH int = 320
 const GAME_HEIGHT int = 240
 const WINDOW_SCALE int = 3
 
-/*
-	Handle the gravity for sand.
-	Takes an x,y coordinate as ints for an argument
-	to get the sand coordinates
-*/
-
 func (g *Game) HandleSand(x, y int) {
 	// Check if we're at the bottom of the grid
 	if y+1 >= len(g.grid[0]) {
 		return
-	}
-
-	// Function to move water to an adjacent empty cell
-	moveWater := func(waterX, waterY int) bool {
-		for _, dx := range []int{-1, 1} {
-			newX := waterX + dx
-			if newX >= 0 && newX < len(g.grid) && g.grid[newX][waterY] == Empty {
-				g.grid[newX][waterY] = Water
-				return true
-			}
-		}
-		return false
 	}
 
 	// Try to move straight down
@@ -60,13 +47,9 @@ func (g *Game) HandleSand(x, y int) {
 		g.grid[x][y] = Empty
 		return
 	} else if g.grid[x][y+1] == Water {
-		if moveWater(x, y+1) {
-			g.grid[x][y+1] = Sand
-			g.grid[x][y] = Empty
-		} else {
-			g.grid[x][y+1] = Sand
-			g.grid[x][y] = Water
-		}
+		// Swap positions with water
+		g.grid[x][y+1] = Sand
+		g.grid[x][y] = Water
 		return
 	}
 
@@ -76,65 +59,70 @@ func (g *Game) HandleSand(x, y int) {
 	canMoveRight := rightX < len(g.grid) && y+1 < len(g.grid[0])
 
 	if canMoveLeft && (g.grid[leftX][y+1] == Empty || g.grid[leftX][y+1] == Water) {
-		if g.grid[leftX][y+1] == Water && !moveWater(leftX, y+1) {
-			g.grid[leftX][y+1] = Sand
-			g.grid[x][y] = Water
-		} else {
-			g.grid[leftX][y+1] = Sand
-			g.grid[x][y] = Empty
-		}
+		// Move sand to the left-down cell
+		g.grid[leftX][y+1], g.grid[x][y] = Sand, g.grid[leftX][y+1]
 	} else if canMoveRight && (g.grid[rightX][y+1] == Empty || g.grid[rightX][y+1] == Water) {
-		if g.grid[rightX][y+1] == Water && !moveWater(rightX, y+1) {
-			g.grid[rightX][y+1] = Sand
-			g.grid[x][y] = Water
-		} else {
-			g.grid[rightX][y+1] = Sand
-			g.grid[x][y] = Empty
-		}
+		// Move sand to the right-down cell
+		g.grid[rightX][y+1], g.grid[x][y] = Sand, g.grid[rightX][y+1]
 	}
 	// If no movement is possible, the sand stays where it is
 }
 
-/*
-Handle the gravity for water
-Takes x & y as int for location of water
-*/
-
 func (g *Game) HandleWater(x, y int) {
-	// Check if we're at the bottom of the grid
 	if y+1 >= len(g.grid[0]) {
 		return
 	}
 
-	// Try to move down
-	if g.grid[x][y+1] == Empty {
-		g.grid[x][y] = Empty
-		g.grid[x][y+1] = Water
+	// Calculate water pressure
+	pressure := 0
+	for i := y; i >= 0 && g.grid[x][i] == Water && pressure < MaxWaterPressure; i-- {
+		pressure++
+	}
+
+	// Move down with pressure
+	for i := 1; i <= pressure && y+i < len(g.grid[0]); i++ {
+		if g.grid[x][y+i] == Empty {
+			g.grid[x][y+i] = Water
+			g.grid[x][y] = Empty
+			return
+		} else if g.grid[x][y+i] != Water {
+			break
+		}
+	}
+
+	// Horizontal flow with surface tension
+	leftX, rightX := x-1, x+1
+	canFlowLeft := leftX >= 0 && g.grid[leftX][y] == Empty
+	canFlowRight := rightX < len(g.grid) && g.grid[rightX][y] == Empty
+
+	if canFlowLeft && canFlowRight {
+		if rand.Float64() < 0.5 {
+			g.flowHorizontal(x, y, leftX)
+		} else {
+			g.flowHorizontal(x, y, rightX)
+		}
+	} else if canFlowLeft {
+		g.flowHorizontal(x, y, leftX)
+	} else if canFlowRight {
+		g.flowHorizontal(x, y, rightX)
+	}
+}
+
+func (g *Game) flowHorizontal(x, y, newX int) {
+	// Check for surface tension
+	if rand.Float64() < SurfaceTensionFactor {
 		return
 	}
 
-	// If can't move down, try to spread horizontally
-	leftX, rightX := x-1, x+1
-	canMoveLeft := leftX >= 0 && g.grid[leftX][y] == Empty
-	canMoveRight := rightX < len(g.grid) && g.grid[rightX][y] == Empty
+	// Flow to the side
+	g.grid[newX][y] = Water
+	g.grid[x][y] = Empty
 
-	if canMoveLeft && canMoveRight {
-		// Randomly choose left or right
-		if rand.Float32() < 0.5 {
-			g.grid[x][y] = Empty
-			g.grid[leftX][y] = Water
-		} else {
-			g.grid[x][y] = Empty
-			g.grid[rightX][y] = Water
-		}
-	} else if canMoveLeft {
-		g.grid[x][y] = Empty
-		g.grid[leftX][y] = Water
-	} else if canMoveRight {
-		g.grid[x][y] = Empty
-		g.grid[rightX][y] = Water
+	// Equalizing - create a smoother water surface
+	if y > 0 && g.grid[x][y-1] == Empty && g.grid[newX][y-1] == Water {
+		g.grid[x][y-1] = Water
+		g.grid[newX][y-1] = Empty
 	}
-	// If can't move in any direction, the water stays where it is
 }
 
 func (g *Game) Pour(x, y int) {
@@ -169,16 +157,41 @@ func (g *Game) Update() error {
 
 	// Multiple passes for smoother movement
 	for pass := 0; pass < 5; pass++ {
-		for x := range g.grid {
-			for y := len(g.grid[x]) - 1; y >= 0; y-- {
-				switch g.grid[x][y] {
-				case Sand:
-					g.HandleSand(x, y)
-				case Water:
-					g.HandleWater(x, y)
+		// Update water from bottom to top, and alternating left-to-right and right-to-left
+		for y := len(g.grid[0]) - 1; y >= 0; y-- {
+			if pass%2 == 0 {
+				for x := 0; x < len(g.grid); x++ {
+					if g.grid[x][y] == Water {
+						g.HandleWater(x, y)
+					}
+				}
+			} else {
+				for x := len(g.grid) - 1; x >= 0; x-- {
+					if g.grid[x][y] == Water {
+						g.HandleWater(x, y)
+					}
 				}
 			}
 		}
+
+		// Handle sand after water
+		// alternate left and right to flow more evenly
+		for y := len(g.grid[0]) - 1; y >= 0; y-- {
+			if pass%2 == 0 {
+				for x := 0; x < len(g.grid); x++ {
+					if g.grid[x][y] == Sand {
+						g.HandleSand(x, y)
+					}
+				}
+			} else {
+				for x := len(g.grid) - 1; x >= 0; x-- {
+					if g.grid[x][y] == Sand {
+						g.HandleSand(x, y)
+					}
+				}
+			}
+		}
+
 	}
 
 	return nil
@@ -209,9 +222,9 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		for j := range g.grid[i] {
 			switch g.grid[i][j] {
 			case Sand:
-				vector.DrawFilledRect(screen, float32(i), float32(j), 1, 1, color.RGBA{128, 128, 128, 255}, false)
+				vector.DrawFilledRect(screen, float32(i), float32(j), 1, 1, color.RGBA{203, 189, 147, 255}, false)
 			case Water:
-				vector.DrawFilledRect(screen, float32(i), float32(j), 1, 1, color.RGBA{228, 228, 228, 255}, false)
+				vector.DrawFilledRect(screen, float32(i), float32(j), 1, 1, color.RGBA{173, 216, 255, 255}, false)
 			}
 		}
 	}
